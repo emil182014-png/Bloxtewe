@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Sandbox Pro: Collision Fix</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: sans-serif; touch-action: none; }
+        canvas { display: block; }
+        
+        #ui-layer { position: absolute; top: 15px; left: 10px; display: flex; flex-direction: column; gap: 8px; z-index: 100; width: calc(100% - 20px); }
+        .row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+        button { padding: 10px 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; color: white; background: #444; font-size: 11px; text-transform: uppercase; transition: 0.2s; }
+        .btn-select-active { background: #e74c3c !important; border: 2px solid white; box-shadow: 0 0 10px #e74c3c; }
+        .btn-pause-active { background: #f1c40f !important; color: #000 !important; }
+        .btn-toggle-on { background: #2ecc71 !important; border: 1px solid white; }
+        .btn-main { background: #27ae60; }
+        .btn-global { background: #607d8b; }
+        .btn-danger { background: #c0392b; }
+        
+        #shapes-menu {
+            background: rgba(0,0,0,0.9); padding: 10px; border-radius: 10px;
+            display: none; flex-wrap: wrap; gap: 8px; border: 1px solid #555; max-width: 280px; margin-top: 5px;
+        }
+
+        .modal-menu {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            display: none; background: #2c3e50; padding: 20px;
+            border-radius: 15px; border: 3px solid #ecf0f1; flex-direction: column; gap: 10px; z-index: 1000;
+            min-width: 240px; box-shadow: 0 0 100px rgba(0,0,0,0.9);
+        }
+        
+        .modal-menu h3 { color: white; margin: 0 0 10px 0; text-align: center; font-size: 16px; border-bottom: 1px solid #555; padding-bottom: 5px; }
+        .modal-menu button { width: 100%; text-align: center; font-size: 13px; padding: 12px; }
+        
+        .color-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; justify-items: center; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px; }
+        .color-dot { width: 30px; height: 30px; border-radius: 50%; border: 2px solid white; cursor: pointer; }
+        .btn-close { background: #95a5a6 !important; margin-top: 5px; }
+        .random-dot { background: linear-gradient(45deg, red, yellow, green, cyan, blue, magenta); border: 2px solid #fff; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="row">
+            <button class="btn-main" onclick="toggleMenu('shapes-menu')">ФИГУРЫ</button>
+            <button id="select-btn" onclick="toggleSelectMode()">ВЫБОР</button>
+            <button class="btn-global" onclick="showGlobalMenu()">ОБЩЕЕ МЕНЮ</button>
+            <button id="pause-btn" onclick="toggleGlobalPause()" style="background: #2980b9;">ПАУЗА</button>
+            <button class="btn-danger" onclick="deleteAll()">УДАЛИТЬ ВСЕ</button>
+            <button onclick="clearShards()">ОСКОЛКИ</button>
+        </div>
+
+        <div id="shapes-menu">
+            <button onclick="spawn('box')">Квадрат</button>
+            <button onclick="spawn('circ')">Круг</button>
+            <button onclick="spawn('tri')">Треугольник</button>
+            <button onclick="spawn('pent')">5-угольник</button>
+            <button onclick="spawn('plus')">Плюс</button>
+            <button onclick="spawn('minus')">Минус</button>
+        </div>
+    </div>
+
+    <div id="context-menu" class="modal-menu">
+        <h3>Опции фигуры</h3>
+        <button onclick="contextAction('delete')" style="background:#c0392b">УДАЛИТЬ</button>
+        <button onclick="contextAction('resize_mode')" style="background:#2ecc71">ИЗМЕНИТЬ РАЗМЕР</button>
+        <button onclick="contextAction('freeze')" style="background:#2980b9">ЗАМОРОЗИТЬ / РАЗМОРОЗИТЬ</button>
+        <button onclick="toggleMenu('ctx-colors')" style="background:#8e44ad">ИЗМЕНИТЬ ЦВЕТ</button>
+        <div id="ctx-colors" class="color-grid" style="display:none;"></div>
+        <button onclick="contextAction('godmode')" style="background:#f39c12">НЕРАЗРУШАЕМОСТЬ</button>
+        <button onclick="contextAction('collision')" style="background:#7f8c8d">ПРИЗРАК (СКВОЗЬ)</button>
+        <button class="btn-close" onclick="hideAllModals()">ЗАКРЫТЬ</button>
+    </div>
+
+    <div id="global-menu" class="modal-menu">
+        <h3>Общие настройки</h3>
+        <button id="rand-spawn-btn" onclick="toggleRandomSpawn()" style="background:#16a085">РАНДОМ ПРИ СОЗДАНИИ: ВЫКЛ</button>
+        <button onclick="globalAction('freeze')" style="background:#2980b9">ЗАМОРОЗИТЬ ВСЕ</button>
+        <button onclick="toggleMenu('global-colors')" style="background:#8e44ad">ЦВЕТ ДЛЯ ВСЕХ</button>
+        <div id="global-colors" class="color-grid" style="display:none;"></div>
+        <button onclick="globalAction('godmode')" style="background:#f39c12">НЕРАЗРУШАЕМОСТЬ: ВКЛ/ВЫКЛ</button>
+        <button onclick="globalAction('collision')" style="background:#7f8c8d">ПРИЗРАК: ВКЛ/ВЫКЛ</button>
+        <button class="btn-close" onclick="hideAllModals()">ЗАКРЫТЬ</button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+
+    <script>
+        const { Engine, Render, Runner, World, Bodies, Body, Composite, MouseConstraint, Mouse, Events } = Matter;
+
+        const engine = Engine.create({ positionIterations: 12, velocityIterations: 12 });
+        const world = engine.world;
+        const render = Render.create({
+            element: document.body,
+            engine: engine,
+            options: { width: window.innerWidth, height: window.innerHeight, wireframes: false, background: '#111' }
+        });
+
+        Render.run(render);
+        Runner.run(Runner.create(), engine);
+
+        let isSelectMode = false, isPaused = false, selectedBody = null, isResizing = false;
+        let globalSettings = { color: '#3498db', isStatic: false, isGod: false, ghost: false, randomSpawn: false };
+        const colors = ['#FF0000', '#FF7F00', '#FFFF00', '#00FF00', '#0000FF', '#9400D3', '#FF00FF', '#FFFFFF', '#333333', '#8B4513'];
+
+        const CAT_WALL = 0x0001; // Категория стен
+        const CAT_OBJ = 0x0002;  // Категория объектов
+
+        function fillGrids() {
+            const ctxGrid = document.getElementById('ctx-colors');
+            const globalGrid = document.getElementById('global-colors');
+            [ctxGrid, globalGrid].forEach((grid, idx) => {
+                colors.forEach(c => {
+                    const dot = document.createElement('div');
+                    dot.className = 'color-dot';
+                    dot.style.background = c;
+                    dot.onclick = () => idx === 0 ? setObjColor(c) : setGlobalColor(c);
+                    grid.appendChild(dot);
+                });
+            });
+            const randomDot = document.createElement('div');
+            randomDot.className = 'color-dot random-dot';
+            randomDot.onclick = setGlobalRandomColors;
+            globalGrid.appendChild(randomDot);
+        }
+        fillGrids();
+
+        const wallT = 500;
+        const wallOpt = { isStatic: true, collisionFilter: { category: CAT_WALL }, render: { fillStyle: '#222' }, friction: 0.5, restitution: 0.5 };
+        World.add(world, [
+            Bodies.rectangle(window.innerWidth/2, window.innerHeight + wallT/2, window.innerWidth + wallT, wallT, wallOpt),
+            Bodies.rectangle(window.innerWidth/2, -wallT/2, window.innerWidth + wallT, wallT, wallOpt),
+            Bodies.rectangle(-wallT/2, window.innerHeight/2, wallT, window.innerHeight + wallT, wallOpt),
+            Bodies.rectangle(window.innerWidth + wallT/2, window.innerHeight/2, wallT, window.innerHeight + wallT, wallOpt)
+        ]);
+
+        function toggleSelectMode() {
+            isSelectMode = !isSelectMode; isResizing = false;
+            document.getElementById('select-btn').className = isSelectMode ? 'btn-select-active' : '';
+            if (!isSelectMode) hideAllModals();
+        }
+
+        function toggleRandomSpawn() {
+            globalSettings.randomSpawn = !globalSettings.randomSpawn;
+            const btn = document.getElementById('rand-spawn-btn');
+            btn.innerText = `РАНДОМ ПРИ СОЗДАНИИ: ${globalSettings.randomSpawn ? 'ВКЛ' : 'ВЫКЛ'}`;
+            btn.className = globalSettings.randomSpawn ? 'btn-toggle-on' : '';
+        }
+
+        function toggleGlobalPause() {
+            isPaused = !isPaused;
+            const btn = document.getElementById('pause-btn');
+            btn.className = isPaused ? 'btn-pause-active' : '';
+            btn.innerText = isPaused ? 'ИГРАТЬ' : 'ПАУЗА';
+            Composite.allBodies(world).forEach(b => {
+                if (b.label === 'destructible') {
+                    if (isPaused) { b.savedVel = { x: b.velocity.x, y: b.velocity.y }; Body.setStatic(b, true); }
+                    else if (!b.isPermanentlyStatic) { Body.setStatic(b, false); if (b.savedVel) Body.setVelocity(b, b.savedVel); }
+                }
+            });
+        }
+
+        function spawn(type) {
+            const x = window.innerWidth / 2, y = 150;
+            const spawnColor = globalSettings.randomSpawn ? '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0') : globalSettings.color;
+            const opt = { 
+                render: { fillStyle: spawnColor }, 
+                restitution: 0.4, label: 'destructible',
+                isStatic: globalSettings.isStatic || isPaused,
+                collisionFilter: { 
+                    category: CAT_OBJ, 
+                    mask: globalSettings.ghost ? CAT_WALL : (CAT_WALL | CAT_OBJ) 
+                }
+            };
+            let shape;
+            if (type === 'box') shape = Bodies.rectangle(x, y, 60, 60, opt);
+            else if (type === 'circ') shape = Bodies.circle(x, y, 30, opt);
+            else if (type === 'tri') shape = Bodies.polygon(x, y, 3, 40, opt);
+            else if (type === 'pent') shape = Bodies.polygon(x, y, 5, 40, opt);
+            else if (type === 'plus') {
+                const p1 = Bodies.rectangle(x, y, 60, 20);
+                const p2 = Bodies.rectangle(x, y, 20, 60);
+                shape = Body.create({ parts: [p1, p2], ...opt });
+            }
+            else if (type === 'minus') shape = Bodies.rectangle(x, y, 60, 20, opt);
+            
+            shape.health = 100; shape.isGod = globalSettings.isGod; shape.isPermanentlyStatic = globalSettings.isStatic;
+            World.add(world, shape);
+        }
+
+        const mouse = Mouse.create(render.canvas);
+        const mc = MouseConstraint.create(engine, { mouse: mouse, constraint: { stiffness: 0.2, render: { visible: false } } });
+        World.add(world, mc);
+
+        Events.on(mc, "mousedown", () => {
+            if (!isSelectMode) return;
+            const bodies = Composite.allBodies(world).filter(b => b.label === 'destructible');
+            const clickedBody = Matter.Query.point(bodies, mouse.position)[0];
+            if (!clickedBody) { if (!isResizing) hideAllModals(); return; }
+            const body = clickedBody.parent || clickedBody;
+            if (isResizing && selectedBody === body) {
+                const b = selectedBody.bounds; const pos = selectedBody.position;
+                if (Math.hypot(mouse.position.x - pos.x, mouse.position.y - b.min.y) < 30 || Math.hypot(mouse.position.x - b.max.x, mouse.position.y - pos.y) < 30) return;
+            }
+            selectedBody = body;
+            setTimeout(() => { document.getElementById('context-menu').style.display = 'flex'; }, 50);
+        });
+
+        // ИСПРАВЛЕННЫЙ ПРИЗРАК
+        function contextAction(action) {
+            if (!selectedBody) return;
+            if (action === 'delete') { Composite.remove(world, selectedBody); hideAllModals(); isResizing = false; }
+            if (action === 'resize_mode') { isResizing = true; hideAllModals(); }
+            if (action === 'freeze') { selectedBody.isPermanentlyStatic = !selectedBody.isStatic; Body.setStatic(selectedBody, !selectedBody.isStatic); hideAllModals(); }
+            if (action === 'godmode') { selectedBody.isGod = !selectedBody.isGod; hideAllModals(); }
+            if (action === 'collision') { 
+                const currentMask = selectedBody.collisionFilter.mask;
+                const newMask = (currentMask === CAT_WALL) ? (CAT_WALL | CAT_OBJ) : CAT_WALL;
+                
+                // ОБНОВЛЯЕМ ВСЕ ЧАСТИ (ВАЖНО!)
+                selectedBody.collisionFilter.mask = newMask;
+                if (selectedBody.parts) {
+                    selectedBody.parts.forEach(part => part.collisionFilter.mask = newMask);
+                }
+                hideAllModals(); 
+            }
+        }
+
+        function globalAction(action) {
+            const bodies = Composite.allBodies(world).filter(b => b.label === 'destructible');
+            if (action === 'freeze') {
+                globalSettings.isStatic = !globalSettings.isStatic;
+                bodies.forEach(b => { b.isPermanentlyStatic = globalSettings.isStatic; Body.setStatic(b, globalSettings.isStatic); });
+            }
+            if (action === 'godmode') { globalSettings.isGod = !globalSettings.isGod; bodies.forEach(b => b.isGod = globalSettings.isGod); }
+            if (action === 'collision') { 
+                globalSettings.ghost = !globalSettings.ghost; 
+                const newMask = globalSettings.ghost ? CAT_WALL : (CAT_WALL | CAT_OBJ);
+                bodies.forEach(b => {
+                    b.collisionFilter.mask = newMask;
+                    if (b.parts) b.parts.forEach(p => p.collisionFilter.mask = newMask);
+                });
+            }
+            hideAllModals();
+        }
+
+        function setGlobalRandomColors() {
+            Composite.allBodies(world).filter(b => b.label === 'destructible').forEach(b => {
+                const rc = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
+                b.render.fillStyle = rc;
+                if(b.parts) b.parts.forEach(p => p.render.fillStyle = rc);
+            });
+            hideAllModals();
+        }
+
+        Events.on(render, 'afterRender', () => {
+            if (!isResizing || !selectedBody) return;
+            const ctx = render.context; const b = selectedBody.bounds; const pos = selectedBody.position;
+            ctx.strokeStyle = '#fff'; ctx.setLineDash([5, 5]); ctx.lineWidth = 2;
+            ctx.strokeRect(b.min.x, b.min.y, b.max.x - b.min.x, b.max.y - b.min.y); ctx.setLineDash([]);
+            ctx.fillStyle = '#3498db'; ctx.beginPath(); ctx.arc(pos.x, b.min.y, 12, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#e67e22'; ctx.beginPath(); ctx.arc(b.max.x, pos.y, 12, 0, Math.PI*2); ctx.fill();
+            if (mouse.button === 0) {
+                if (Math.hypot(mouse.position.x - pos.x, mouse.position.y - b.min.y) < 35) {
+                    let ratio = (Math.abs(pos.y - mouse.position.y) * 2) / (b.max.y - b.min.y);
+                    if (ratio > 0.05 && ratio < 15) Body.scale(selectedBody, 1, ratio);
+                }
+                if (Math.hypot(mouse.position.x - b.max.x, mouse.position.y - pos.y) < 35) {
+                    let ratio = (Math.abs(pos.x - mouse.position.x) * 2) / (b.max.x - b.min.x);
+                    if (ratio > 0.05 && ratio < 15) Body.scale(selectedBody, ratio, 1);
+                }
+            }
+        });
+
+        function showGlobalMenu() { document.getElementById('global-menu').style.display = 'flex'; }
+        function hideAllModals() {
+            document.querySelectorAll('.modal-menu').forEach(m => m.style.display = 'none');
+            document.querySelectorAll('.color-grid').forEach(g => g.style.display = 'none');
+        }
+
+        function toggleMenu(id) {
+            const el = document.getElementById(id);
+            el.style.display = (el.style.display === 'grid') ? 'none' : 'grid';
+        }
+
+        function deleteAll() {
+            Composite.allBodies(world).forEach(b => { if (b.label === 'destructible' || b.label === 'shard') Composite.remove(world, b); });
+            isResizing = false;
+        }
+
+        function setObjColor(c) { 
+            if(selectedBody) {
+                selectedBody.render.fillStyle = c;
+                if(selectedBody.parts) selectedBody.parts.forEach(p => p.render.fillStyle = c);
+            } 
+            hideAllModals(); 
+        }
+
+        function setGlobalColor(c) {
+            globalSettings.color = c;
+            Composite.allBodies(world).filter(b => b.label === 'destructible').forEach(b => {
+                b.render.fillStyle = c;
+                if(b.parts) b.parts.forEach(p => p.render.fillStyle = c);
+            });
+            hideAllModals();
+        }
+
+        Events.on(engine, 'collisionStart', (e) => {
+            if (isPaused) return;
+            e.pairs.forEach((pair) => {
+                const { bodyA, bodyB } = pair; const f = Math.abs(bodyA.speed - bodyB.speed);
+                if (f > 8) {
+                    [bodyA, bodyB].forEach(b => {
+                        const root = b.parent || b;
+                        if (root.label === 'destructible' && !root.isGod) {
+                            root.health -= f * 5;
+                            if (root.health <= 0) {
+                                for(let i=0; i<5; i++) {
+                                    const s = Bodies.rectangle(root.position.x, root.position.y, 10, 10, { render: { fillStyle: root.render.fillStyle }, label: 'shard' });
+                                    Body.setVelocity(s, { x: (Math.random()-0.5)*10, y: (Math.random()-0.5)*10 });
+                                    World.add(world, s);
+                                }
+                                Composite.remove(world, root);
+                                if (selectedBody === root) isResizing = false;
+                            }
+                        }
+                    });
+                }
+            });
+        });
+
+        function clearShards() { Composite.allBodies(world).forEach(b => { if (b.label === 'shard') Composite.remove(world, b); }); }
+        window.addEventListener('resize', () => { render.canvas.width = window.innerWidth; render.canvas.height = window.innerHeight; });
+    </script>
+</body>
+</html>
